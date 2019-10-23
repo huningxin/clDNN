@@ -12,47 +12,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "include/common.cl"
+#include "include/fetch.cl"
 #include "include/data_types.cl"
-    
-#define GLOBAL_SIZE 128
-#define LOCAL_SIZE GLOBAL_SIZE
 
 #ifdef BATCH_AXIS
-    #define GAP_SIZE (INPUT0_FEATURE_NUM * INPUT0_SIZE_X * INPUT0_SIZE_Y)
     #define VALUES_NUM INPUT0_BATCH_NUM
-    #define FIRST_DIM_SIZE INPUT0_SIZE_X
-    #define SECOND_DIM_SIZE INPUT0_SIZE_Y
-    #define FIRST_DIM_MUL 1
-    #define SECOND_DIM_MUL INPUT0_SIZE_X
-    #define THIRD_DIM_MUL (INPUT0_SIZE_X * INPUT0_SIZE_Y)
+    #define AXIS 0
 #endif
 #ifdef FEATURE_AXIS
-    #define GAP_SIZE (INPUT0_SIZE_X * INPUT0_SIZE_Y)
     #define VALUES_NUM INPUT0_FEATURE_NUM
-    #define FIRST_DIM_SIZE INPUT0_SIZE_X
-    #define SECOND_DIM_SIZE INPUT0_SIZE_Y
-    #define FIRST_DIM_MUL 1
-    #define SECOND_DIM_MUL INPUT0_SIZE_X
-    #define THIRD_DIM_MUL (INPUT0_SIZE_X * INPUT0_SIZE_Y * INPUT0_FEATURE_NUM)
+    #define AXIS 1
 #endif
 #ifdef Y_AXIS
-    #define GAP_SIZE INPUT0_SIZE_X
     #define VALUES_NUM INPUT0_SIZE_Y
-    #define FIRST_DIM_SIZE INPUT0_SIZE_X
-    #define SECOND_DIM_SIZE INPUT0_FEATURE_NUM
-    #define FIRST_DIM_MUL 1
-    #define SECOND_DIM_MUL (INPUT0_SIZE_Y * INPUT0_SIZE_X)
-    #define THIRD_DIM_MUL (INPUT0_SIZE_X * INPUT0_SIZE_Y * INPUT0_FEATURE_NUM)
+    #define AXIS 2
 #endif
 #ifdef X_AXIS
-    #define GAP_SIZE 1
     #define VALUES_NUM INPUT0_SIZE_X
-    #define FIRST_DIM_SIZE INPUT0_SIZE_Y
-    #define SECOND_DIM_SIZE INPUT0_FEATURE_NUM
-    #define FIRST_DIM_MUL INPUT0_SIZE_X
-    #define SECOND_DIM_MUL (INPUT0_SIZE_Y * INPUT0_SIZE_X)
-    #define THIRD_DIM_MUL (INPUT0_SIZE_X * INPUT0_SIZE_Y * INPUT0_FEATURE_NUM)
+    #define AXIS 3
 #endif
 
 #ifdef MAX_OUT
@@ -60,95 +37,93 @@
     #define INPUT0_FILL_VAL INPUT0_VAL_MIN
 #else
     #define COMPARE_SIGN >
-    #define INPUT0_FILL_VAL INPUT0_VAL_MAX    
+    #define INPUT0_FILL_VAL INPUT0_VAL_MAX
 #endif
 
-__attribute__((reqd_work_group_size(LOCAL_SIZE, 1, 1)))
-KERNEL(arg_max_gpu_axis)(const __global INPUT0_TYPE* input, __global OUTPUT_TYPE* output)
+KERNEL(arg_max_min_modified)(const __global INPUT0_TYPE* input
+                                  ,__global OUTPUT_TYPE* output
+#ifdef SECOND_OUTPUT_EXIST
+                                  ,__global INPUT1_TYPE* second_output
+#endif
+                            )
 {
 #include "include/arg_max_min_common.cl"
-    uint results[TOP_K];
-    __local iav_type scratch[LOCAL_SIZE];
-    const uint first_dim_id = (uint)get_global_id(1);
-    const uint second_third_dim_id = (uint)get_global_id(2);
-    const uint second_dim_id = second_third_dim_id % SECOND_DIM_SIZE;
-    const uint third_dim_id = second_third_dim_id / SECOND_DIM_SIZE;
-    const uint output_index = (first_dim_id + second_dim_id * FIRST_DIM_SIZE + third_dim_id * FIRST_DIM_SIZE * SECOND_DIM_SIZE) * TOP_K;
-    const uint offset = first_dim_id * FIRST_DIM_MUL + second_dim_id * SECOND_DIM_MUL + third_dim_id * THIRD_DIM_MUL;
-    uint local_index = get_local_id(0);
-    uint global_index = offset + local_index * GAP_SIZE;
+    iav_type result[TOP_K];
+    uint output_idx = (uint)get_global_id(0);
 
-    iav_type accumulator;
+    if (output_idx >= OPERATION_NUM)
+        return;
 
-    uint temp_index = global_index;
-    uint start_index = (global_index - offset) / GAP_SIZE;
-    __attribute__((opencl_unroll_hint))
-    for (uint i = 0; i < TOP_K; i++)
-    {
-        accumulator.index = start_index;
-        accumulator.value = input[global_index];
-        for (int j = 0; j < i; j++)
-        {
-            if (accumulator.index == results[j])
-                accumulator.value = INPUT0_FILL_VAL;
+#ifdef BATCH_AXIS
+    const uint b = 0;
+    #ifdef OUTPUT_LAYOUT_YXFB
+    const uint y = output_idx / (INPUT0_SIZE_X * INPUT0_FEATURE_NUM); // Y
+    const uint x = output_idx / INPUT0_FEATURE_NUM % INPUT0_SIZE_X; // X
+    const uint f = output_idx % INPUT0_FEATURE_NUM; // F
+    #else
+    const uint f = output_idx / (INPUT0_SIZE_Y * INPUT0_SIZE_X); // F
+    const uint y = output_idx / INPUT0_SIZE_X % INPUT0_SIZE_Y; // Y
+    const uint x = output_idx % INPUT0_SIZE_X; // X
+    #endif
+    uint indices[] = {b, f, y, x}; // BFYX
+#endif
+#ifdef FEATURE_AXIS
+    const uint f = 0;
+    #ifdef OUTPUT_LAYOUT_YXFB
+    const uint y = output_idx / (INPUT0_SIZE_X * INPUT0_BATCH_NUM); // Y
+    const uint x = output_idx / INPUT0_BATCH_NUM % INPUT0_SIZE_X; // X
+    const uint b = output_idx % INPUT0_BATCH_NUM; // B
+    #else
+    const uint b = output_idx / (INPUT0_SIZE_Y * INPUT0_SIZE_X); // B
+    const uint y = output_idx / INPUT0_SIZE_X % INPUT0_SIZE_Y;  // Y
+    const uint x = output_idx % INPUT0_SIZE_X;  // X
+    #endif
+    uint indices[] = {b, f, y, x}; // BFYX
+#endif
+#ifdef Y_AXIS
+    const uint y = 0;
+    #ifdef OUTPUT_LAYOUT_YXFB
+    const uint x = output_idx / (INPUT0_FEATURE_NUM * INPUT0_BATCH_NUM); // X
+    const uint f = output_idx / INPUT0_BATCH_NUM % INPUT0_FEATURE_NUM; // F
+    const uint b = output_idx % INPUT0_BATCH_NUM; // B
+    #else
+    const uint b = output_idx / (INPUT0_FEATURE_NUM * INPUT0_SIZE_X); // B
+    const uint f = output_idx / (INPUT0_SIZE_X) % INPUT0_FEATURE_NUM; // F
+    const uint x = output_idx % INPUT0_SIZE_X; // X
+    #endif
+    uint indices[] = {b, f, y, x}; // BFYX
+#endif
+#ifdef X_AXIS
+    const uint x = 0;
+    #ifdef OUTPUT_LAYOUT_YXFB
+    const uint y = output_idx / (INPUT0_FEATURE_NUM * INPUT0_BATCH_NUM); // Y
+    const uint f = output_idx / INPUT0_BATCH_NUM % INPUT0_FEATURE_NUM; // F
+    const uint b = output_idx % INPUT0_BATCH_NUM; // B
+    #else
+    const uint b = output_idx / (INPUT0_FEATURE_NUM * INPUT0_SIZE_Y); // B
+    const uint f = output_idx / (INPUT0_SIZE_Y) % INPUT0_FEATURE_NUM; // F
+    const uint y = output_idx % INPUT0_SIZE_Y; // Y
+    #endif
+    uint indices[] = {b, f, y, x}; // BFYX
+#endif
+
+    INPUT0_TYPE val = input[GET_DATA_INDEX(INPUT0, indices[0], indices[1], indices[2], indices[3])];
+    result[0].index = 0;
+    result[0].value = val;
+    for (uint i = 0; i < VALUES_NUM; ++i) {
+        indices[AXIS] = i;
+        INPUT0_TYPE in_data = input[GET_DATA_INDEX(INPUT0, indices[0], indices[1], indices[2], indices[3])];
+        if (val COMPARE_SIGN in_data) {
+            result[0].index = i;
+            result[0].value = in_data;
+            val = in_data;
         }
-        global_index += GLOBAL_SIZE * GAP_SIZE;
-        uint element_index = start_index + GLOBAL_SIZE;
-        while (global_index < offset + VALUES_NUM * GAP_SIZE) 
-        {
-            iav_type element;
-            element.value = input[global_index];
-            element.index = element_index;
-            for (int j = 0; j < i; j++){
-                if (element.index == results[j])
-                    element.value = INPUT0_FILL_VAL;
-            }
-            if(accumulator.value COMPARE_SIGN element.value)
-            {
-                accumulator.value = element.value;
-                accumulator.index = element.index;
-            }
-            element_index += GLOBAL_SIZE;
-            global_index += GLOBAL_SIZE * GAP_SIZE;
-        }
-        if (local_index < VALUES_NUM)
-            scratch[local_index] = accumulator;
-        else
-            scratch[local_index].value = INPUT0_FILL_VAL;
-
-        barrier(CLK_LOCAL_MEM_FENCE);
-
-        __attribute__((opencl_unroll_hint))
-        for(uint scratch_offset = LOCAL_SIZE / 2; scratch_offset > 0; scratch_offset /= 2) 
-        {
-            if (local_index < scratch_offset) 
-            {
-                iav_type other = scratch[local_index + scratch_offset];
-                iav_type mine = scratch[local_index];
-
-                if(mine.value COMPARE_SIGN other.value)
-                {
-                    scratch[local_index] = other;
-                }
-            }
-            barrier(CLK_LOCAL_MEM_FENCE);
-        }
-
-        if (local_index == 0) 
-        {
-            output[output_index + i] = scratch[0].index;
-        }
-        global_index = temp_index;
-        results[i] = scratch[0].index;
     }
+
+    indices[AXIS] = 0;
+    output[GET_DATA_INDEX(OUTPUT, indices[0], indices[1], indices[2], indices[3])] = TO_OUTPUT_TYPE(result[0].index);
 }
 
 #undef COMPARE_SIGN
 #undef INPUT0_FILL_VAL
-#undef GAP_SIZE
 #undef VALUES_NUM
-#undef FIRST_DIM_SIZE
-#undef SECOND_DIM_SIZE
-#undef FIRST_DIM_MUL
-#undef SECOND_DIM_MUL
-#undef THIRD_DIM_MUL
