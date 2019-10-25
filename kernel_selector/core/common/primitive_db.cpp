@@ -16,6 +16,7 @@
 #include "primitive_db.h"
 #include <assert.h>
 #include <algorithm>
+#include <stdexcept>
 
 #ifndef NDEBUG
 #include <fstream>
